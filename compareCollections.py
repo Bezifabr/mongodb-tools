@@ -1,8 +1,10 @@
+from pprint import pprint
+
+from collections import Counter
 from pymongo import MongoClient
 
 
-def get_collection_from_database(nodes, username, password, db_name, collection_name, auth_source='admin',
-                                 auth_mechanism='SCRAM-SHA-1'):
+def get_database_connection(nodes, username, password, db_name, auth_source='admin', auth_mechanism='SCRAM-SHA-1'):
     client = MongoClient(
         nodes,
         username=username,
@@ -10,78 +12,97 @@ def get_collection_from_database(nodes, username, password, db_name, collection_
         authSource=auth_source,
         authMechanism=auth_mechanism
     )
-    return client[db_name][collection_name]
+    return client[db_name]
 
 
-def _get_unique_documents_from_collection(base_collection_cursor, comparison_collection, field_name):
-    return [doc for doc in base_collection_cursor if
-            not (bool(comparison_collection.find_one({field_name: doc.get(field_name)})))]
-
-
-def _print_list_of_differing_documents(collection_name, differing_documents):
-    if differing_documents:
-        print("List of differing documents from " + collection_name)
-        for doc in differing_documents:
-            print(doc)
-
-
-def _print_number_of_differing_documents(collection_name_1, collection_name_2, difference):
-    print(collection_name_1 + " has " + str(difference) + " documents that do not exist in " + collection_name_2)
-
-
-def _print_number_of_documents(collection_name, number_of_documents):
-    print(collection_name + " has " + str(number_of_documents) + " elements")
-
-
-def _print_one_is_bigger_than_other(name_1, name_2):
-    print(name_1 + " is bigger than " + name_2)
-
-
-def _print_bigger_collection(collection_name_1, collection_name_2, collection_size_1, collection_size_2):
+def _print_bigger_collection_name(collection_name_1, collection_name_2, collection_size_1, collection_size_2):
     if collection_size_1 > collection_size_2:
-        _print_one_is_bigger_than_other(collection_name_1, collection_name_2)
+        pprint(collection_name_1 + " is bigger than " + collection_name_2)
     if collection_size_2 > collection_size_1:
-        _print_one_is_bigger_than_other(collection_name_2, collection_name_1)
+        pprint(collection_name_2 + " is bigger than " + collection_name_1)
 
 
-def compare_two_collections_by_field_sorted_by_date(collection_1, collection_2, unique_field_name, date_field):
-    all_documents_cursor_1 = collection_1.find({}).sort(date_field)
-    all_documents_cursor_2 = collection_2.find({}).sort(date_field)
-    differing_documents_1 = _get_unique_documents_from_collection(all_documents_cursor_1, collection_2,
-                                                                  unique_field_name)
-    differing_documents_2 = _get_unique_documents_from_collection(all_documents_cursor_2, collection_1,
-                                                                  unique_field_name)
-
+def _compare_two_collections_by_number_of_documents(collection_1, collection_2):
     collection_size_1 = collection_1.count_documents({})
     collection_size_2 = collection_2.count_documents({})
     collection_name_1: str = collection_1.name + " from " + collection_1.database.name
     collection_name_2: str = collection_2.name + " from " + collection_2.database.name
 
-    # Print differing documents
-    _print_list_of_differing_documents(collection_name_1, differing_documents_1)
-    _print_list_of_differing_documents(collection_name_2, differing_documents_2)
-    print('--------------')
+    if collection_size_2 == collection_size_1:
+        pprint("There are " + str(collection_size_1) + " documents in both collections!")
+        return True
     # Print number of documents
-    _print_number_of_documents(collection_name_1, collection_size_1)
-    _print_number_of_documents(collection_name_2, collection_size_2)
-    _print_bigger_collection(collection_name_1, collection_name_2, collection_size_1, collection_size_2)
-    # Print number of differences
-    _print_number_of_differing_documents(collection_name_1, collection_name_2, len(differing_documents_1))
-    _print_number_of_differing_documents(collection_name_2, collection_name_1, len(differing_documents_2))
+    pprint(collection_name_1 + " has " + str(collection_size_1) + " elements")
+    pprint(collection_name_2 + " has " + str(collection_size_2) + " elements")
+    _print_bigger_collection_name(collection_name_1, collection_name_2, collection_size_1, collection_size_2)
+    return False
 
-    print("ONLY IF THE COMPARED COLLECTIONS HAVE DOCUMENTS WITH DATE FIELDS")
-    print("The oldest differing document from the " + collection_name_1 + ": " + str(differing_documents_1[0]))
-    print("The newest differing document from the " + collection_name_1 + ": " + str(differing_documents_1[-1]))
-    print("The oldest differing document from the " + collection_name_2 + ": " + str(differing_documents_2[0]))
-    print("The newest differing document from the " + collection_name_2 + ": " + str(differing_documents_2[-1]))
+
+def _compare_two_collections_by_differing_documents(collection_1, collection_2):
+    pipeline = [
+        {"$group": {"_id": "$_id", "count": {"$sum": 1}}}
+    ]
+
+    A = list(collection_1.aggregate(pipeline))
+    B = list(collection_2.aggregate(pipeline))
+
+    _hashableA = list(map(lambda x: str(x["_id"]), A))
+    _hashableB = list(map(lambda x: str(x["_id"]), B))
+
+    _countedA = Counter(_hashableA)
+    _countedB = Counter(_hashableB)
+    counted = _countedA + _countedB
+
+    differences: dict = {x: count for x, count in counted.items() if count < 2}
+
+    if len(differences) == 0:
+        return True
+    pprint(differences)
+    print("Number of differences: " + str(len(differences)))
+    return False
+
+
+def run_tests(_collection_names, _db_1, _db_2):
+    _general_result = True
+    for collection_name_1, collection_name_2 in _collection_names:
+        print()
+        print("--------------------")
+        pprint("Compare " + collection_name_1 + " with " + collection_name_2)
+        test1 = _compare_two_collections_by_differing_documents(_db_1[collection_name_1], _db_2[collection_name_2])
+        test2 = _compare_two_collections_by_number_of_documents(_db_1[collection_name_1], _db_2[collection_name_2])
+        if test1 and test2:
+            print("[SUCCESS] There are no differences!")
+        else:
+            print("[FAILED] There are some differences!")
+            _general_result = False
+
+    print()
+    print()
+    print("________________")
+    if _general_result:
+        pprint("[OVERALL RESULT]: SUCCESS!")
+    else:
+        pprint("[OVERALL RESULT]: FAILED!")
+    print("Number of tests: " + str(len(_collection_names)))
+    print("----------------")
+    print()
+    print()
 
 #     
 # USAGE EXAMPLE
 # 
 
-collection_1 = get_collection_from_database(
-    'localhost:27017', 'user', 'password', 'database', 'collection')
-collection_2 = get_collection_from_database(
-    'localhost:27018', 'user', 'password', 'database', 'collection')
+db_1 = get_database_connection('localhost:27017', 'user', 'password', 'database')
+db_2 = get_database_connection('localhost:27018', 'user', 'password', 'database')
 
-compare_two_collections_by_field_sorted_by_date(collection_1, collection_2, 'id_field', 'date_field')
+collection_names = [
+    ['colname1', 'colname1'],
+    ['colname2', 'colname2']
+#   [x1, x1]
+#   [x2, x2]
+#   [.., ..]
+#   [xn, xn]
+#   etc...
+]
+
+run_tests(collection_names, db_1, db_2)
